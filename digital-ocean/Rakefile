@@ -1,0 +1,58 @@
+# frozen_string_literal: true
+
+require 'sshkit'
+require 'open3'
+require 'shellwords'
+
+ssh_public_key = File.expand_path('~/.ssh/id_rsa.pub')
+
+def sh1(command)
+  puts command
+  stdout, _, status = Open3.capture3(command)
+  raise "Command failed with status (#{status.existstatus})" unless status.success?
+  puts "output", stdout
+  return stdout.chomp
+end
+
+namespace :droplet do
+  task :create do
+    env = {
+      "TF_VAR_do_token" => ENV.fetch('DIGITAL_OCEAN_API_KEY'),
+      "TF_VAR_ssh_public_key_path" => ssh_public_key,
+    }
+    sh(env, "terraform init")
+    sh(env, "terraform apply -auto-approve")
+  end
+
+  task :deploy do
+    include SSHKit::DSL
+
+    ip_address = `terraform output -raw droplet_ip_address`.chomp
+    on "root@#{ip_address}" do
+      within '/root' do
+        execute 'apt list --upgradable'
+        execute <<-CMD
+          docker run \
+            -e OVERPASS_META=yes \
+            -e OVERPASS_MODE=init \
+            -e OVERPASS_PLANET_URL=https://download.geofabrik.de/north-america/us-latest.osm.bz2 \
+            -e OVERPASS_RULES_LOAD=10 \
+            -v /big/docker/overpass_db/:/db \
+            -p 12345:80 \
+            -d \
+            --rm \
+            --name overpass_monaco wiktorn/overpass-api
+        CMD
+      end
+    end
+    
+  end
+
+  task :destroy do
+    env = {
+      "TF_VAR_do_token" => ENV.fetch('DIGITAL_OCEAN_API_KEY'),
+      "TF_VAR_ssh_public_key_path" => ssh_public_key,
+    }
+    sh(env, "terraform apply -destroy -auto-approve")
+  end
+end
